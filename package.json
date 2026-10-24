@@ -1,0 +1,12 @@
+{
+  "name": "flipbook",
+  "version": "1.0.0",
+  "description": "PDF Flipbook Reader",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=14"
+  }
+}
