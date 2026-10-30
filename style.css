@@ -16,7 +16,7 @@
   --text-soft:    rgba(255,255,255,0.58);
   --font-display: 'Cormorant Garamond', Georgia, serif;
   --font-body:    'DM Sans', system-ui, sans-serif;
-  --spine-w:      13px;
+  --spine-w:      0px;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -191,9 +191,32 @@ html, body {
   align-items: center;
   height: 100vh;
   gap: 0;
+  position: relative;
+  isolation: isolate;
   background:
     radial-gradient(ellipse 100% 55% at 50% -2%, rgba(42,33,16,.95) 0%, transparent 65%),
     var(--ink-2);
+}
+
+/* Optional background picture chosen by the viewer */
+#reader-bg {
+  position: absolute; inset: 0; z-index: -1;
+  background-size: cover; background-position: center;
+  background-repeat: no-repeat;
+  opacity: 0; transition: opacity .45s;
+  pointer-events: none;
+}
+#reader-bg::after {
+  content: ''; position: absolute; inset: 0;
+  background:
+    radial-gradient(ellipse at center, rgba(0,0,0,0) 35%, rgba(0,0,0,.5) 100%),
+    rgba(8,7,5,.22);
+}
+#reader-screen.has-bg #reader-bg { opacity: 1; }
+#reader-screen.has-bg .controls {
+  background: rgba(8,7,5,.5);
+  backdrop-filter: blur(10px);
+  border-radius: 14px 14px 0 0;
 }
 
 /* Top bar */
@@ -264,7 +287,7 @@ html, body {
 #book-stage {
   flex: 1;
   display: flex; align-items: center; justify-content: center;
-  gap: 1.4rem; width: 100%; overflow: hidden;
+  gap: 1.4rem; width: 100%; overflow: visible;
   padding: 1.2rem 0;
 }
 
@@ -301,39 +324,73 @@ html, body {
 }
 
 /* ════════════════════════════════════════════════════
-   THE BOOK
+   THE BOOK  (hardcover photobook)
 ════════════════════════════════════════════════════ */
 #book {
   position: relative;
   display: flex; align-items: stretch;
-  box-shadow:
-    0 40px 110px rgba(0,0,0,.82),
-    0 14px 40px rgba(0,0,0,.58),
-    0 3px 10px rgba(0,0,0,.45);
-  border-radius: 2px;
   z-index: 1;
+  perspective: 1800px;               /* JS sets the exact value */
+  /* closed book centres itself, opening slides it back.
+     Keep the time equal to FLIP_MS in flipbook.js */
+  transition: transform .9s cubic-bezier(.65, 0, .35, 1);
+  will-change: transform;
+}
+
+/* Shadow + stacked page-edge thickness, drawn under the pages */
+.under {
+  position: absolute; top: 0; z-index: 0; pointer-events: none;
+  width: var(--pw, 300px); height: var(--ph, 420px);
+}
+#under-l {
+  left: 0; border-radius: 4px 0 0 4px;
+  box-shadow:
+    -1px 1px 0 #f2ece1, -2px 2px 0 #d2c9b7, -3px 3px 0 #efe8dc, -4px 4px 0 #bdb3a0,
+    0 40px 80px rgba(0,0,0,.6), 0 12px 28px rgba(0,0,0,.45);
+}
+#under-r {
+  left: var(--pw, 300px); border-radius: 0 4px 4px 0;
+  box-shadow:
+    1px 1px 0 #f2ece1, 2px 2px 0 #d2c9b7, 3px 3px 0 #efe8dc, 4px 4px 0 #bdb3a0,
+    0 40px 80px rgba(0,0,0,.6), 0 12px 28px rgba(0,0,0,.45);
+}
+/* Closed book: hard cover board edge instead of paper edges */
+#book.is-front #under-r {
+  box-shadow:
+    1px 1px 0 #4d453a, 2px 2px 0 #2f2a22, 3px 3px 0 #4d453a, 4px 4px 0 #26221b,
+    0 40px 80px rgba(0,0,0,.6), 0 12px 28px rgba(0,0,0,.45);
+}
+#book.is-back #under-l {
+  box-shadow:
+    -1px 1px 0 #4d453a, -2px 2px 0 #2f2a22, -3px 3px 0 #4d453a, -4px 4px 0 #26221b,
+    0 40px 80px rgba(0,0,0,.6), 0 12px 28px rgba(0,0,0,.45);
 }
 
 /* Page slots */
 .page-slot {
-  background: var(--black);
-  position: relative; overflow: visible; flex-shrink: 0;
+  position: relative; flex-shrink: 0; z-index: 1;
+  background: #fff; overflow: hidden;
 }
-#slot-left  { border-radius: 3px 0 0 3px; overflow: hidden; }
-#slot-right { border-radius: 0 3px 3px 0; overflow: visible; }
+#slot-left  { border-radius: 4px 0 0 4px; }
+#slot-right { border-radius: 0 4px 4px 0; }
 
-/* Spine shadow gradients */
-#slot-left::after {
-  content: '';
-  position: absolute; inset: 0;
-  background: linear-gradient(to left, rgba(0,0,0,.15) 0%, rgba(0,0,0,.04) 22%, transparent 55%);
+/* Hinge groove on a closed cover */
+#book.is-front #slot-right::after,
+#book.is-back  #slot-left::after {
+  content: ''; position: absolute; top: 0; bottom: 0; width: 24px;
   pointer-events: none; z-index: 3;
 }
-#slot-right::after {
-  content: '';
-  position: absolute; inset: 0;
-  background: linear-gradient(to right, rgba(0,0,0,.15) 0%, rgba(0,0,0,.04) 22%, transparent 55%);
-  pointer-events: none; z-index: 3;
+#book.is-front #slot-right::after {
+  left: 0;
+  background: linear-gradient(to right,
+    rgba(0,0,0,.32) 0, rgba(0,0,0,.32) 1px,
+    rgba(255,255,255,.22) 3px, rgba(0,0,0,.2) 9px, rgba(0,0,0,0) 24px);
+}
+#book.is-back #slot-left::after {
+  right: 0;
+  background: linear-gradient(to left,
+    rgba(0,0,0,.32) 0, rgba(0,0,0,.32) 1px,
+    rgba(255,255,255,.22) 3px, rgba(0,0,0,.2) 9px, rgba(0,0,0,0) 24px);
 }
 
 /* Page canvas */
@@ -348,33 +405,53 @@ html, body {
   opacity: .024; mix-blend-mode: multiply;
 }
 
-/* Spine */
+/* Spine = soft crease where the pages meet (no gap, so spreads
+   run straight across like a lay-flat photobook) */
 #spine {
-  width: var(--spine-w); flex-shrink: 0; position: relative; overflow: hidden;
-  background: linear-gradient(to right,
-    #100b04 0%,
-    #2a1c0a 15%,
-    #4a3416 32%,
-    #5a4018 45%,
-    #452f12 60%,
-    #2a1c0a 78%,
-    #0a0704 100%);
+  width: var(--spine-w); flex-shrink: 0; position: relative;
+  z-index: 28; pointer-events: none;
+  transition: opacity .35s;
 }
-.spine-sheen {
-  position: absolute; inset: 0;
+#spine.off { opacity: 0; }
+#spine::before {
+  content: ''; position: absolute; top: 0; bottom: 0; left: -30px; width: 60px;
   background: linear-gradient(to right,
-    transparent 0%,
-    rgba(255,255,255,.06) 38%,
-    rgba(255,255,255,.13) 50%,
-    rgba(255,255,255,.04) 62%,
-    transparent 100%);
+    rgba(0,0,0,0) 0%, rgba(0,0,0,.07) 30%,
+    rgba(0,0,0,.24) 49%, rgba(0,0,0,.28) 50%, rgba(0,0,0,.24) 51%,
+    rgba(0,0,0,.07) 70%, rgba(0,0,0,0) 100%);
 }
 
-/* Flip canvas — covers entire book during animation */
-#flip-layer {
-  position: absolute; top: 0; left: 0;
-  pointer-events: none; z-index: 20; display: none;
+/* Shadow the turning page throws on its neighbour */
+#cast {
+  position: absolute; left: 0; top: 0; z-index: 22; pointer-events: none;
+  width: calc(var(--pw, 300px) * 2); height: var(--ph, 420px);
 }
+
+/* The turning page: a stiff board hinged on the spine */
+#leaf {
+  position: absolute; top: 0; display: none; z-index: 25;
+  pointer-events: none;
+  transform-style: preserve-3d; will-change: transform;
+}
+.leaf-face {
+  position: absolute; inset: 0; overflow: hidden; background: #fff;
+  backface-visibility: hidden; -webkit-backface-visibility: hidden;
+}
+.leaf-back { transform: rotateY(180deg); }
+.leaf-face canvas { display: block; width: 100%; height: 100%; }
+.leaf-shade { position: absolute; inset: 0; opacity: 0; pointer-events: none; }
+#leaf.fwd .leaf-front .leaf-shade { background: linear-gradient(to right, #000, rgba(0,0,0,0) 75%); }
+#leaf.fwd .leaf-back  .leaf-shade { background: linear-gradient(to left,  #000, rgba(0,0,0,0) 75%); }
+#leaf.bwd .leaf-front .leaf-shade { background: linear-gradient(to left,  #000, rgba(0,0,0,0) 75%); }
+#leaf.bwd .leaf-back  .leaf-shade { background: linear-gradient(to right, #000, rgba(0,0,0,0) 75%); }
+/* Visible thickness of the board when it is seen edge-on */
+#leaf::after {
+  content: ''; position: absolute; top: 1px; bottom: 1px; width: 6px;
+  background: linear-gradient(to right, #cfc6b3, #f1ebdf, #cfc6b3);
+  transform: rotateY(90deg);
+}
+#leaf.fwd::after { right: -3px; }
+#leaf.bwd::after { left: -3px; }
 
 /* ════════════════════════════════════════════════════
    CORNER PEEL — Hey Zine style
@@ -418,7 +495,7 @@ html, body {
 }
 #corner-next:hover::before { opacity: 1; }
 
-/* Back: bottom-left corner of the right page (goes prev) */
+/* Back: bottom-left corner of the left page (goes prev) */
 #corner-back {
   position: absolute;
   bottom: -1px; left: -1px;
@@ -434,12 +511,12 @@ html, body {
   width: 0; height: 0;
   border-style: solid;
   border-width: 0 26px 26px 0;
-  border-color: transparent rgba(200,160,90,.22) transparent transparent;
+  border-color: transparent transparent rgba(200,160,90,.32) transparent;
   transition: border-width .22s cubic-bezier(.22,1,.36,1), border-color .22s;
 }
 #corner-back:hover::after {
-  border-width: 0 50px 50px 0;
-  border-color: transparent rgba(200,160,90,.45) transparent transparent;
+  border-width: 0 52px 52px 0;
+  border-color: transparent transparent rgba(200,160,90,.58) transparent;
 }
 
 /* Book bottom shadow */
@@ -447,7 +524,9 @@ html, body {
   width: 84%; height: 18px; margin-top: -4px;
   background: radial-gradient(ellipse at center, rgba(0,0,0,.58) 0%, transparent 70%);
   filter: blur(10px);
+  transition: width .9s cubic-bezier(.65, 0, .35, 1);
 }
+#book-wrap.closed .book-shadow { width: 46%; }
 
 /* ════════════════════════════════════════════════════
    CONTROLS
@@ -520,4 +599,11 @@ html, body {
   .corner { display: none; }
   .top-bar__title-wrap { display: none; }
   .controls { padding: .6rem 1rem .8rem; }
+}
+
+/* Split-mode pill button */
+#btn-split {
+  width: auto; min-width: 52px; padding: 0 .8rem; border-radius: 15px;
+  font: 400 .62rem var(--font-body); letter-spacing: .08em;
+  text-transform: uppercase;
 }

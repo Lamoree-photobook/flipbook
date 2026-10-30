@@ -3,31 +3,45 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
 // ── State ──────────────────────────────────────────────────────
-let pdf       = null;
-let total     = 0;
-let spread    = 0;
-let PW        = 300;
-let PH        = 420;
-let dims      = [];          // size of every PDF page (in PDF points)
-let pages     = [];          // book pages: { src, part: 'F'|'L'|'R', w, h }
-let splitMode = 'auto';      // 'auto' | 'split' | 'single'
-let coverAlone = true;       // true = first page is a lone cover
-let zoomLevel = 1;
-let flipping  = false;
-const cache   = new Map();
-let bgCtrl    = null;
+let pdf        = null;
+let total      = 0;          // number of book pages (after cutting spreads)
+let spread     = 0;
+let PW         = 300;        // page width  (css px)
+let PH         = 420;        // page height (css px)
+let dims       = [];         // size of every PDF page (PDF points)
+let pages      = [];         // book pages: { src, part: 'F'|'L'|'R', w, h }
+let splitMode  = 'auto';     // 'auto' | 'split' | 'single' | 'wrap'
+let coverAlone = true;       // true = first book page is a lone front cover
+let zoomLevel  = 1;
+let flipping   = false;
+const cache    = new Map();
+let bgCtrl     = null;
+let bgUrl      = null;
+
+// Flip length in ms. Keep in sync with `transition` on #book in style.css
+const FLIP_MS = 900;
 
 // ── DOM ────────────────────────────────────────────────────────
 const uploadScreen = document.getElementById('upload-screen');
 const readerScreen = document.getElementById('reader-screen');
+const readerBg     = document.getElementById('reader-bg');
 const dropZone     = document.getElementById('drop-zone');
 const fileInput    = document.getElementById('file-input');
+const bookWrap     = document.getElementById('book-wrap');
 const bookEl       = document.getElementById('book');
+const underL       = document.getElementById('under-l');
+const underR       = document.getElementById('under-r');
 const slotLeft     = document.getElementById('slot-left');
 const slotRight    = document.getElementById('slot-right');
+const spineEl      = document.getElementById('spine');
 const cvL          = document.getElementById('canvas-left');
 const cvR          = document.getElementById('canvas-right');
-const flipLayer    = document.getElementById('flip-layer');
+const castEl       = document.getElementById('cast');
+const leaf         = document.getElementById('leaf');
+const leafFront    = document.getElementById('leaf-front');
+const leafBack     = document.getElementById('leaf-back');
+const shadeFront   = document.getElementById('leaf-shade-front');
+const shadeBack    = document.getElementById('leaf-shade-back');
 const btnPrev      = document.getElementById('btn-prev');
 const btnNext      = document.getElementById('btn-next');
 const pageInfo     = document.getElementById('page-info');
@@ -39,9 +53,12 @@ const progressFill = document.getElementById('progress-fill');
 const progressText = document.getElementById('progress-text');
 const btnZoomIn    = document.getElementById('btn-zoom-in');
 const btnZoomOut   = document.getElementById('btn-zoom-out');
+const btnSplit     = document.getElementById('btn-split');
+const btnBg        = document.getElementById('btn-bg');
+const btnBgClear   = document.getElementById('btn-bg-clear');
+const bgInput      = document.getElementById('bg-input');
 const cornerNext   = document.getElementById('corner-next');
 const cornerBack   = document.getElementById('corner-back');
-const btnSplit     = document.getElementById('btn-split');
 
 // ── File input / drag-drop ─────────────────────────────────────
 fileInput.addEventListener('change', () => {
@@ -62,11 +79,36 @@ dropZone.addEventListener('drop', (e) => {
   if (f && f.type === 'application/pdf') loadPDF(f);
 });
 
+// ── Background picture ─────────────────────────────────────────
+btnBg.addEventListener('click', () => bgInput.click());
+
+bgInput.addEventListener('change', () => {
+  const f = bgInput.files[0];
+  bgInput.value = '';
+  if (!f || !f.type.startsWith('image/')) return;
+  if (bgUrl) URL.revokeObjectURL(bgUrl);
+  bgUrl = URL.createObjectURL(f);
+  readerBg.style.backgroundImage = `url("${bgUrl}")`;
+  readerScreen.classList.add('has-bg');
+  btnBgClear.style.display = 'flex';
+});
+
+btnBgClear.addEventListener('click', () => {
+  readerScreen.classList.remove('has-bg');
+  btnBgClear.style.display = 'none';
+  if (bgUrl) URL.revokeObjectURL(bgUrl);
+  bgUrl = null;
+  setTimeout(() => { readerBg.style.backgroundImage = 'none'; }, 450);
+});
+
 // ── Load PDF ───────────────────────────────────────────────────
 async function loadPDF(file) {
   cache.clear();
   if (bgCtrl) bgCtrl.abort();
   zoomLevel = 1;
+  flipping  = false;
+  leaf.style.display = 'none';
+  castEl.style.background = 'none';
 
   bookTitle.textContent = file.name.replace(/\.pdf$/i, '');
   progressWrap.style.display = 'flex';
@@ -74,8 +116,7 @@ async function loadPDF(file) {
   progressText.textContent   = 'Opening…';
 
   const url = URL.createObjectURL(file);
-  pdf   = await pdfjsLib.getDocument(url).promise;
-  total = pdf.numPages;
+  pdf = await pdfjsLib.getDocument(url).promise;
 
   const dpr = window.devicePixelRatio || 1;
 
@@ -129,28 +170,43 @@ function recalcSize(vpBase, dpr) {
 
   slotLeft.style.width   = slotRight.style.width  = PW + 'px';
   slotLeft.style.height  = slotRight.style.height = PH + 'px';
+
+  // Used by the CSS (shadows, flip layer) and the 3D flip
+  bookEl.style.setProperty('--pw', PW + 'px');
+  bookEl.style.setProperty('--ph', PH + 'px');
+  bookEl.style.perspective = (PW * 6) + 'px';
 }
 
 // ── Work out the printed pages ─────────────────────────────────
 // A landscape PDF page (e.g. 420x297 or 210x148.5 mm) is a full spread
 // = two book pages side by side, so it is cut down the middle.
 // A portrait PDF page is a single book page.
+// 'wrap' mode: the first PDF page is a wrap-around cover (back | front),
+// so the FRONT cover goes first and the BACK cover goes last.
 function buildPages() {
   pages = [];
   dims.forEach((d, i) => {
     const isWide = d.w > d.h * 1.05;
-    const split  = splitMode === 'split' || (splitMode === 'auto' && isWide);
-    if (split) {
+    const split  = splitMode === 'split' || splitMode === 'wrap' ||
+                   (splitMode === 'auto' && isWide);
+    const doSplit = split && (splitMode !== 'wrap' || isWide);
+    if (doSplit) {
       pages.push({ src: i + 1, part: 'L', w: d.w / 2, h: d.h });
       pages.push({ src: i + 1, part: 'R', w: d.w / 2, h: d.h });
     } else {
       pages.push({ src: i + 1, part: 'F', w: d.w, h: d.h });
     }
   });
+
+  if (splitMode === 'wrap' && pages.length > 1 &&
+      pages[0].part === 'L' && pages[1].part === 'R' && pages[0].src === pages[1].src) {
+    pages.push(pages.shift());          // back cover (left half) goes to the end
+  }
+
   total = pages.length;
-  // A lone portrait first page = front cover shown on its own.
-  // If the first PDF page is a spread, show it as a spread.
-  coverAlone = pages[0].part === 'F';
+  // First book page on its own = front cover shown closed.
+  // If the PDF starts with a normal two-page spread, show it as a spread.
+  coverAlone = pages[0].part !== 'L';
 }
 
 // ── Spread helpers ─────────────────────────────────────────────
@@ -168,6 +224,15 @@ function spreadToPages(si) {
   const l = si * 2 + 1;
   const r = si * 2 + 2;
   return [l <= total ? l : null, r <= total ? r : null];
+}
+
+// 'front' = closed book showing the front cover (right page only)
+// 'back'  = closed book showing the back cover  (left page only)
+// 'open'  = two pages
+function stateOf(l, r) {
+  if (!l) return 'front';
+  if (!r) return 'back';
+  return 'open';
 }
 
 // ── Page cache ─────────────────────────────────────────────────
@@ -237,13 +302,54 @@ async function paintPage(n, cv) {
   ctx.drawImage(src, 0, 0);
 }
 
-// ── Draw a spread ──────────────────────────────────────────────
-async function drawSpread(si) {
-  const [l, r] = spreadToPages(si);
-  const isCover = coverAlone && si === 0;
-  bookEl.classList.toggle('cover-mode', isCover);
+function copyCanvas(src, dst) {
+  dst.width  = src.width;  dst.height  = src.height;
+  dst.style.width  = PW + 'px'; dst.style.height = PH + 'px';
+  dst.getContext('2d').drawImage(src, 0, 0);
+}
 
+// ── Book state (closed front / open / closed back) ─────────────
+// A closed book is centred on screen; opening it slides it back so the
+// spine is in the middle. The layout is always 2 pages wide, so we just
+// shift it left/right and hide the empty side.
+function bookShift(st) {
+  return st === 'front' ? -PW / 2 : st === 'back' ? PW / 2 : 0;
+}
+
+function shiftBook(st, instant) {
+  const tf = `translateX(${bookShift(st)}px)`;
+  if (instant) {
+    bookEl.style.transition = 'none';
+    bookEl.style.transform  = tf;
+    void bookEl.offsetWidth;            // apply now, without animating
+    bookEl.style.transition = '';
+  } else {
+    bookEl.style.transform = tf;
+  }
+}
+
+function setBookClasses(st) {
+  bookEl.classList.toggle('is-front', st === 'front');
+  bookEl.classList.toggle('is-back',  st === 'back');
+  bookEl.classList.toggle('is-open',  st === 'open');
+  bookWrap.classList.toggle('closed', st !== 'open');
+  spineEl.classList.toggle('off',     st !== 'open');
+}
+
+function showSlots(l, r) {
+  slotLeft.style.visibility  = underL.style.visibility = l ? 'visible' : 'hidden';
+  slotRight.style.visibility = underR.style.visibility = r ? 'visible' : 'hidden';
+}
+
+// ── Draw a spread ──────────────────────────────────────────────
+async function drawSpread(si, instant = true) {
+  const [l, r] = spreadToPages(si);
   await Promise.all([paintPage(l, cvL), paintPage(r, cvR)]);
+
+  const st = stateOf(l, r);
+  setBookClasses(st);
+  showSlots(l, r);
+  shiftBook(st, instant);
 
   const ms = maxSpread();
   btnPrev.disabled = si <= 0;
@@ -251,16 +357,13 @@ async function drawSpread(si) {
   scrubber.value   = si;
   scrubber.max     = ms;
 
-  // Show/hide corner peels
-  cornerNext.style.display = (si < ms) ? 'block' : 'none';
-  cornerBack.style.display = (si > 0 && !isCover) ? 'block' : 'none';
+  // Corner peels: next on the right page, back on the left page
+  cornerNext.style.display = (r && si < ms) ? 'block' : 'none';
+  cornerBack.style.display = (l && si > 0)  ? 'block' : 'none';
 
-  const [lp, rp] = spreadToPages(si);
-  if (isCover) {
-    pageInfo.textContent = `p. 1 / ${total}`;
-  } else {
-    pageInfo.textContent = `p. ${lp || ''}${rp ? '–' + rp : ''} / ${total}`;
-  }
+  if (st === 'front')      pageInfo.textContent = `p. ${r} / ${total}`;
+  else if (st === 'back')  pageInfo.textContent = `p. ${l} / ${total}`;
+  else                     pageInfo.textContent = `p. ${l}–${r} / ${total}`;
 }
 
 // ── Background preloader ───────────────────────────────────────
@@ -291,192 +394,105 @@ async function kickPreload() {
 }
 
 // ════════════════════════════════════════════════════════════
-//  REALISTIC CORNER-PEEL PAGE FLIP
-//  Originates from the bottom-right corner of the right page,
-//  arcs up-left like a real magazine page being turned.
+//  HARDCOVER PAGE TURN
+//  A stiff page is hinged on the spine and swings over like a
+//  real photobook page: front face = the page you are turning,
+//  back face = the page that lands on the other side.
 // ════════════════════════════════════════════════════════════
+function easeInOutCubic(t) {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
 async function flip(dir) {
   if (flipping || !pdf) return;
-  const newSi = dir === 'next' ? spread + 1 : spread - 1;
+  const fwd   = dir === 'next';
+  const newSi = fwd ? spread + 1 : spread - 1;
   if (newSi < 0 || newSi > maxSpread()) return;
   flipping = true;
 
+  cornerNext.style.display = 'none';
+  cornerBack.style.display = 'none';
   cornerNext.classList.remove('lifting');
 
-  const fwd      = dir === 'next';
   const [cl, cr] = spreadToPages(spread);
-  const flyN     = fwd ? cr : cl;          // the page that physically turns
   const [nl, nr] = spreadToPages(newSi);
 
-  // Render all pages we'll need
-  const tL = document.createElement('canvas');
-  const tR = document.createElement('canvas');
-  const fC = document.createElement('canvas');
-  await Promise.all([paintPage(nl, tL), paintPage(nr, tR), paintPage(flyN, fC)]);
+  // Draw everything off-screen first so nothing flashes
+  const under = document.createElement('canvas');
+  await Promise.all([
+    paintPage(fwd ? cr : cl, leafFront),   // page being turned
+    paintPage(fwd ? nl : nr, leafBack),    // page that lands on the other side
+    paintPage(fwd ? nr : nl, under),       // page revealed underneath
+  ]);
 
-  // Incoming spread goes underneath immediately
-  copyCanvas(tL, cvL);
-  copyCanvas(tR, cvR);
+  // ── All ready: set up in one go ──
+  copyCanvas(under, fwd ? cvR : cvL);
+  showSlots(fwd ? cl : nl, fwd ? nr : cr);
+  spineEl.classList.toggle('off', stateOf(cl, cr) !== 'open');
 
-  // Flip layer spans the entire book (both pages + spine)
-  const dpr      = window.devicePixelRatio || 1;
-  const spineW   = parseInt(
-    getComputedStyle(document.documentElement).getPropertyValue('--spine-w')
-  ) || 13;
-  const totalW   = PW * 2 + spineW;
+  const hinge = slotRight.offsetLeft;          // spine position inside the book
+  leaf.className        = fwd ? 'fwd' : 'bwd';
+  leaf.style.width      = PW + 'px';
+  leaf.style.height     = PH + 'px';
+  leaf.style.left       = (fwd ? hinge : 0) + 'px';
+  leaf.style.transformOrigin = fwd ? 'left center' : 'right center';
+  leaf.style.transform  = 'rotateY(0deg)';
+  leaf.style.display    = 'block';
 
-  flipLayer.style.display = 'block';
-  flipLayer.width         = Math.round(totalW * dpr);
-  flipLayer.height        = Math.round(PH    * dpr);
-  flipLayer.style.width   = totalW + 'px';
-  flipLayer.style.height  = PH    + 'px';
-  flipLayer.style.top     = '0px';
-  flipLayer.style.left    = '0px';
+  // Book slides to the middle (opening) or to the side (closing)
+  shiftBook(stateOf(nl, nr), false);
 
-  const fCtx = flipLayer.getContext('2d');
-  fCtx.scale(dpr, dpr);
-
-  // Parchment back-of-page colour
-  const pageBack  = '#ede4d6';
-  const pageBack2 = '#e8ddd0'; // slightly darker for depth
-
-  // Duration: long enough to look deliberate, short enough to feel snappy
-  const DURATION = 520;
-  const t0       = performance.now();
-
-  // Ease: expo-out — fast lift from corner, smooth settle
-  function easeOut(x) {
-    return x === 1 ? 1 : 1 - Math.pow(2, -10 * x);
-  }
-
-  // For FORWARD flip: the right page (at x = PW+spineW … totalW) folds
-  // over from bottom-right toward top-left.
-  // We model the fold as a sweeping trapezoid clipped from the right edge.
-  // The "fold crease" moves from x=totalW (right edge) to x=PW+spineW (left edge of right page).
+  const d    = PW * 6;                          // perspective distance
+  const shW  = Math.min(150, PW * 0.35);        // width of the cast shadow
+  const okL  = fwd ? !!cl : !!nl;               // is there a page to shade?
+  const okR  = fwd ? !!nr : !!cr;
+  const t0   = performance.now();
 
   function frame(now) {
-    const progress = Math.min((now - t0) / DURATION, 1);
-    const ep       = easeOut(progress);
+    const t  = Math.min((now - t0) / FLIP_MS, 1);
+    const e  = easeInOutCubic(t);
+    const th = e * Math.PI;
+    const s  = Math.sin(th);
+    const c  = Math.cos(th);
 
-    fCtx.clearRect(0, 0, totalW, PH);
+    leaf.style.transform = `rotateY(${fwd ? -e * 180 : e * 180}deg)`;
 
-    if (fwd) {
-      // RIGHT page is turning left
-      // foldX: the crease x-position in book coords, sweeping PW+spineW → totalW as ep 0→1 reversed
-      // At ep=0: crease at right edge (totalW), full page visible
-      // At ep=1: crease at left edge (PW+spineW), page fully gone
-      const rightEdge = totalW;
-      const leftEdge  = PW + spineW;
-      const creaseX   = rightEdge - (rightEdge - leftEdge) * ep;
-      const visW      = creaseX - leftEdge; // visible width of flipping page
+    // The page darkens as it turns away from the light
+    const sh = (0.45 * s).toFixed(3);
+    shadeFront.style.opacity = sh;
+    shadeBack.style.opacity  = sh;
 
-      // ── Draw visible portion of the flipping page (squeezed perspective) ──
-      if (visW > 1) {
-        fCtx.save();
-        fCtx.beginPath();
-        // Clip: trapezoidal — bottom is narrower than top to simulate curl from corner
-        // At low ep: nearly rectangular. At high ep: strongly tapered toward bottom-right.
-        const curlFactor = ep * 0.35; // how much the bottom-right corner curls inward
-        const topLeft    = leftEdge;
-        const topRight   = creaseX;
-        const botLeft    = leftEdge + visW * curlFactor * 0.5;
-        const botRight   = creaseX  - visW * curlFactor;
-        fCtx.moveTo(topLeft, 0);
-        fCtx.lineTo(topRight, 0);
-        fCtx.lineTo(botRight, PH);
-        fCtx.lineTo(botLeft,  PH);
-        fCtx.closePath();
-        fCtx.clip();
-
-        // Draw the page image, perspective-squeezed horizontally
-        const scaleX = visW / PW;
-        fCtx.transform(scaleX, 0, 0, 1, leftEdge, 0);
-        fCtx.drawImage(fC, 0, 0, PW, PH);
-        fCtx.fillStyle = 'rgba(0,0,0,' + (0.15 * ep) + ')';
-        fCtx.fillRect(0, 0, PW, PH);
-
-        // Lighting: shadow on the right edge where it bends away
-        const gFront = fCtx.createLinearGradient(0, 0, PW, 0);
-        gFront.addColorStop(0, 'transparent');
-        gFront.addColorStop(0.6, 'transparent');
-        gFront.addColorStop(1, `rgba(0,0,0,${0.4 * (1 - visW / PW)})`);
-        fCtx.fillStyle = gFront;
-        fCtx.fillRect(0, 0, PW, PH);
-
-        fCtx.restore();
+    // Shadow the turning page throws onto the page next to it
+    const rel  = (fwd ? c : -c) * PW * d / (d - s * PW);
+    const edge = hinge + rel;
+    const a    = 0.4 * s;
+    let bg = 'none';
+    if (a > 0.01) {
+      if (rel >= 0 && okR) {
+        bg = `linear-gradient(to right, rgba(0,0,0,0) ${edge}px, rgba(0,0,0,${a.toFixed(3)}) ${edge}px, rgba(0,0,0,0) ${edge + shW}px)`;
+      } else if (rel < 0 && okL) {
+        bg = `linear-gradient(to right, rgba(0,0,0,0) ${edge - shW}px, rgba(0,0,0,${a.toFixed(3)}) ${edge}px, rgba(0,0,0,0) ${edge}px)`;
       }
-
-     
-      // ── Cast shadow of turning page onto the underlying left page ──
-      if (ep > 0.05 && visW > 0) {
-        const shadowW  = Math.min(50, PW * 0.18) * ep;
-        const shadowX0 = leftEdge - shadowW;
-        const gShadow  = fCtx.createLinearGradient(shadowX0, 0, leftEdge, 0);
-        gShadow.addColorStop(0, 'transparent');
-        gShadow.addColorStop(1, `rgba(0,0,0,${0.22 * ep})`);
-        fCtx.fillStyle = gShadow;
-        fCtx.fillRect(Math.max(0, shadowX0), 0, shadowW + 2, PH);
-      }
-
-      // ── Darken spine slightly during flip ──
-      fCtx.fillStyle = `rgba(8,5,2,${ep * 0.5})`;
-      fCtx.fillRect(PW, 0, spineW, PH);
-
-    } else {
-      // PREV: left page (x = 0 … PW) turns right
-      // creaseX sweeps from 0 (left edge) to PW (right edge of left page)
-      const creaseX = PW * ep;
-      const visW    = PW - creaseX;    // visible width of flipping page
-
-      // Flipping page (squeezed)
-      if (visW > 1) {
-        fCtx.save();
-        const curlFactor = ep * 0.35;
-        fCtx.beginPath();
-        fCtx.moveTo(creaseX, 0);
-        fCtx.lineTo(PW, 0);
-        fCtx.lineTo(PW - visW * curlFactor * 0.5, PH);
-        fCtx.lineTo(creaseX + visW * curlFactor, PH);
-        fCtx.closePath();
-        fCtx.clip();
-
-        const scaleX = visW / PW;
-        fCtx.transform(scaleX, 0, 0, 1, creaseX, 0);
-        fCtx.drawImage(fC, 0, 0, PW, PH);
-        fCtx.fillStyle = 'rgba(0,0,0,' + (0.15 * ep) + ')';
-fCtx.fillRect(0, 0, PW, PH);
-
-        const gFront = fCtx.createLinearGradient(0, 0, PW, 0);
-        gFront.addColorStop(0, `rgba(0,0,0,${0.38 * (1 - visW / PW)})`);
-        gFront.addColorStop(0.3, 'transparent');
-        fCtx.fillStyle = gFront;
-        fCtx.fillRect(0, 0, PW, PH);
-        fCtx.restore();
-      }
-
-      
-      fCtx.fillStyle = `rgba(8,5,2,${ep * 0.5})`;
-      fCtx.fillRect(PW, 0, spineW, PH);
     }
+    castEl.style.background = bg;
 
-    if (progress < 1) {
+    if (t < 1) {
       requestAnimationFrame(frame);
     } else {
-      flipLayer.style.display = 'none';
-      flipping = false;
-      spread   = newSi;
-      drawSpread(spread);
-      kickPreload();
+      finish();
     }
+  }
+
+  async function finish() {
+    spread = newSi;
+    await drawSpread(newSi, false);   // final pages go under the landed page
+    leaf.style.display = 'none';
+    castEl.style.background = 'none';
+    flipping = false;
+    kickPreload();
   }
 
   requestAnimationFrame(frame);
-}
-
-function copyCanvas(src, dst) {
-  dst.width  = src.width;  dst.height  = src.height;
-  dst.style.width  = PW + 'px'; dst.style.height = PH + 'px';
-  dst.getContext('2d').drawImage(src, 0, 0);
 }
 
 // ── Corner peel interactions ───────────────────────────────────
@@ -508,6 +524,7 @@ btnZoomOut.addEventListener('click', () => {
   applyZoom();
 });
 async function applyZoom() {
+  if (flipping) return;
   cache.clear();
   recalcSize(null, window.devicePixelRatio || 1);
   await drawSpread(spread);
@@ -556,17 +573,19 @@ window.addEventListener('resize', () => {
   if (!pdf) return;
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => {
+    if (flipping) return;
     cache.clear();
     recalcSize(null, window.devicePixelRatio || 1);
     drawSpread(spread);
   }, 150);
 });
 
-// ── Split mode button (Auto → Split → Single) ─────────────────
+// ── Split mode button (Auto → Split → Single → Wrap) ──────────
 const SPLIT_LABELS = {
   auto:   ['Auto',   'Auto: landscape PDF pages are cut in half, portrait pages stay whole'],
   split:  ['Split',  'Every PDF page is cut in half (two book pages each)'],
   single: ['Single', 'No cutting: every PDF page is one book page'],
+  wrap:   ['Wrap',   'Wrap-around cover: first PDF page is back | front cover. Front cover shows first, back cover last'],
 };
 function updateSplitButton() {
   const [label, tip] = SPLIT_LABELS[splitMode];
@@ -575,7 +594,7 @@ function updateSplitButton() {
 }
 btnSplit.addEventListener('click', async () => {
   if (!pdf || flipping) return;
-  const order = ['auto', 'split', 'single'];
+  const order = ['auto', 'split', 'single', 'wrap'];
   splitMode = order[(order.indexOf(splitMode) + 1) % order.length];
   buildPages();
   updateSplitButton();
@@ -585,18 +604,3 @@ btnSplit.addEventListener('click', async () => {
   await drawSpread(0);
   kickPreload();
 });
-
-// ── Cover-mode CSS (single page only) ─────────────────────────
-const coverStyle = document.createElement('style');
-coverStyle.textContent = `
-  #book.cover-mode #slot-left,
-  #book.cover-mode #spine { display: none; }
-  #book.cover-mode #slot-right { border-radius: 3px; }
-  #book.cover-mode #corner-back { display: none !important; }
-  #btn-split {
-    width: auto; min-width: 52px; padding: 0 .8rem; border-radius: 15px;
-    font: 400 .62rem 'DM Sans', sans-serif; letter-spacing: .08em;
-    text-transform: uppercase;
-  }
-`;
-document.head.appendChild(coverStyle);
