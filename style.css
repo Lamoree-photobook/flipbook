@@ -23,6 +23,7 @@
 
 html, body {
   height: 100%;
+  touch-action: manipulation;
   background: var(--surface);
   color: #fff;
   font-family: var(--font-body);
@@ -37,6 +38,7 @@ html, body {
 #upload-screen {
   position: relative;
   height: 100vh;
+  height: 100dvh;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -190,6 +192,7 @@ html, body {
   flex-direction: column;
   align-items: center;
   height: 100vh;
+  height: 100dvh;
   gap: 0;
   position: relative;
   isolation: isolate;
@@ -598,8 +601,39 @@ html, body {
   .brand__name { font-size: 2.4rem; }
   .corner { display: none; }
   .top-bar__title-wrap { display: none; }
-  .controls { padding: .6rem 1rem .8rem; }
+  .top-bar { padding: .6rem 1rem; }
+
+  /* Phone: swipe or tap the page corners to turn, so no side arrows */
+  .arrow-btn { display: none; }
+  #book-stage { gap: 0; padding: .6rem 0; }
+
+  /* Controls: slider on its own row, buttons underneath */
+  .controls {
+    flex-wrap: wrap; justify-content: center;
+    gap: .6rem 1rem; padding: .6rem 1rem .9rem;
+  }
+  .controls__scrubber-wrap { order: 1; flex: 1 1 100%; }
+  .controls__page    { order: 2; }
+  .controls__actions { order: 3; }
 }
+
+/* Touch screens: bigger things to tap */
+@media (pointer: coarse) {
+  .ctrl-btn { width: 36px; height: 36px; }
+  #btn-split { height: 36px; }
+  #scrubber::-webkit-slider-thumb { width: 24px; height: 24px; }
+  #scrubber::-moz-range-thumb { width: 24px; height: 24px; }
+}
+
+/* Hide / show the top bar and controls */
+#btn-show-ui {
+  display: none;
+  position: fixed; right: 14px; bottom: 14px; z-index: 50;
+  background: rgba(8,7,5,.55); backdrop-filter: blur(8px);
+}
+#reader-screen.ui-hidden #btn-show-ui { display: flex; }
+#reader-screen.ui-hidden .top-bar,
+#reader-screen.ui-hidden .controls { display: none; }
 
 /* Split-mode pill button */
 #btn-split {
